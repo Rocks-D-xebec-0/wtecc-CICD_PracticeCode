@@ -1,81 +1,116 @@
 apiVersion: tekton.dev/v1beta1
 kind: Pipeline
-metadata:  
+metadata:
   name: cd-pipeline
+
 spec:
   workspaces:
     - name: pipeline-workspace
+
   params:
-    - name: build-image
     - name: repo-url
+      type: string
+
     - name: branch
-      default: master
+      type: string
+      default: main
+
+    - name: build-image
+      type: string
+
+    - name: app-name
+      type: string
+      default: hitcounter
+
   tasks:
+
+    # ---------------- INIT ----------------
     - name: init
-      workspaces:
-        - name: source
-          workspace: pipeline-workspace          
       taskRef:
         name: cleanup
-
-    - name: clone
       workspaces:
-        - name: output
-          workspace: pipeline-workspace          
+        - name: source
+          workspace: pipeline-workspace
+
+    # ---------------- CLONE ----------------
+    - name: clone
+      runAfter:
+        - init
       taskRef:
         name: git-clone
-      params:
-      - name: url
-        value: $(params.repo-url)
-      - name: revision
-        value: $(params.branch)
-      runAfter:
-        - init      
-
-    - name: lint
       workspaces:
-        - name: source
-          workspace: pipeline-workspace          
-      taskRef:
-        name: flake8
+        - name: output
+          workspace: pipeline-workspace
       params:
-      - name: image
-        value: "python:3.9-slim"
-      - name: args
-        value: ["--count","--max-complexity=10","--max-line-length=127","--statistics"]
+        - name: url
+          value: "$(params.repo-url)"
+
+        - name: revision
+          value: "$(params.branch)"
+
+    # ---------------- LINT ----------------
+    - name: lint
       runAfter:
         - clone
-
-    - name: tests
+      taskRef:
+        name: flake8
       workspaces:
         - name: source
-          workspace: pipeline-workspace          
-      taskRef:
-        name: nose
+          workspace: pipeline-workspace
       params:
-      - name: args
-        value: "-v --with-spec --spec-color"
+        - name: image
+          value: python:3.9-slim
+
+        - name: args
+          value:
+            - "--count"
+            - "--max-complexity=10"
+            - "--max-line-length=127"
+            - "--statistics"
+
+    # ---------------- TESTS ----------------
+    - name: tests
       runAfter:
         - lint
-
-    - name: build
+      taskRef:
+        name: nose
       workspaces:
         - name: source
-          workspace: pipeline-workspace          
+          workspace: pipeline-workspace
+      params:
+        - name: args
+          value: "-v"
+
+    # ---------------- BUILD IMAGE ----------------
+    - name: build
+      runAfter:
+        - tests
       taskRef:
         name: buildah
         kind: ClusterTask
+      workspaces:
+        - name: source
+          workspace: pipeline-workspace
       params:
-      - name: IMAGE
-        value: "$(params.build-image)"
-      runAfter:
-        - tests
+        - name: IMAGE
+          value: "$(params.build-image)"
 
+    # ---------------- DEPLOY ----------------
     - name: deploy
-      taskRef:
-        name: echo
-      params:
-      - name: message
-        value: "Deploying $(params.branch) branch of $(params.repo-url) ..."
       runAfter:
         - build
+      taskRef:
+        name: openshift-client
+        kind: ClusterTask
+      params:
+        - name: SCRIPT
+          value: |
+            oc create deployment $(params.app-name) \
+              --image=$(params.build-image) \
+              --dry-run=client -o yaml | oc apply -f -
+
+            oc expose deployment $(params.app-name) --port=8080 || true
+
+            oc expose service $(params.app-name) || true
+
+            oc get all
