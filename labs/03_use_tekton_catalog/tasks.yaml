@@ -7,11 +7,14 @@ spec:
     - name: message
       description: The message to echo
       type: string
+
   steps:
     - name: echo-message
       image: alpine:3
-      command: [/bin/echo]
-      args: ["$(params.message)"]
+      command:
+        - /bin/echo
+      args:
+        - "$(params.message)"
 
 ---
 apiVersion: tekton.dev/v1beta1
@@ -19,15 +22,56 @@ kind: Task
 metadata:
   name: checkout
 spec:
+  workspaces:
+    - name: source
+
   params:
     - name: repo-url
       description: The URL of the git repo to clone
       type: string
+
     - name: branch
       description: The branch to clone
       type: string
+
   steps:
     - name: checkout
       image: bitnami/git:latest
-      command: [git]
-      args: ["clone", "--branch", "$(params.branch)", "$(params.repo-url)"]
+      workingDir: $(workspaces.source.path)
+      command:
+        - git
+      args:
+        - clone
+        - --branch
+        - "$(params.branch)"
+        - "$(params.repo-url)"
+        - .
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nose
+spec:
+  workspaces:
+    - name: source
+
+  params:
+    - name: args
+      description: Arguments to pass to nose
+      type: string
+      default: "-v"
+
+  steps:
+    - name: nosetests
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/bash
+        set -e
+
+        python -m pip install --upgrade pip wheel
+        pip install -r requirements.txt
+        pip install nose
+
+        nosetests $(params.args)
